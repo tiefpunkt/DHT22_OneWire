@@ -16,21 +16,22 @@
 //along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 //
-//VERSION 1.2 DS2423  for ATTINY2313 and ATTINY25
+//VERSION 1.2 DS18B20  ATTINY13 (AD input) and ATTINY25 (internal sensor)
 
 //FOR MAKE by hand
 /*
-avr-gcc -mmcu=[attiny25|attiny2313] -O2 -c ow_slave_DS2423.c
-avr-gcc.exe -mmcu=[attiny25|attiny2313]  ow_slave_DS2423.o -o ow_slave_DS2423.elf
-avr-objcopy -O ihex  ow_slave_DS2423.elf ow_slave_DS2423.hex
+avr-gcc -mmcu=attiny13 -O2 -c [name].c
+avr-gcc.exe -mmcu=attiny13  [name].o -o [name].elf
+avr-objcopy -O ihex  [name].elf [name].hex
 */
 
-#include "am2302.h"
+
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <util/delay.h>
-//does not work here because less memory by ATtiny13
+#include "am2302.h"
+
 #if defined(__AVR_ATtiny13A__) || defined(__AVR_ATtiny13__)
 // OW_PORT Pin 6  - PB1
 //Analog input PB2
@@ -62,6 +63,17 @@ avr-objcopy -O ihex  ow_slave_DS2423.elf ow_slave_DS2423.hex
 				   TIMSK0=0;\
 				   GIMSK=(1<<INT0);/*set direct GIMSK register*/\
 				   TCCR0B=(1<<CS00)|(1<<CS01); /*9.6mhz /64 couse 8 bit Timer interrupt every 6,666us*/
+
+//Setup Temp Measurement DS18B20
+#define INIT_TEMP   DDRB&=~(1<<PINB2); \
+					ADMUX=(1<<MUX0); \
+					ADCSRA= (1<<ADEN) | (1<<ADPS2) | (1<<ADPS1) | (1<<ADPS0);
+#define CONV_TEMP		ADCSRA|=(1<<ADSC); \
+						while ((ADCSRA&(1<<ADSC))!=0) {}\
+						scratchpad[0]=ADCL;\
+						scratchpad[1]=ADCH;\
+						
+
 
 
 //Times
@@ -103,7 +115,7 @@ avr-objcopy -O ihex  ow_slave_DS2423.elf ow_slave_DS2423.hex
 #define OWT_RESET_PRESENCE 4
 #define OWT_PRESENCE 20 
 #define OWT_READLINE 3 //for fast master, 4 for slow master and long lines
-#define OWT_LOWTIME 3 //for fast master, 4 for slow master and long lines
+#define OWT_LOWTIME 3 //for fast master, 4 for slow master and long lines 
 
 //Initializations of AVR
 #define INIT_AVR CLKPR=(1<<CLKPCE); \
@@ -112,104 +124,35 @@ avr-objcopy -O ihex  ow_slave_DS2423.elf ow_slave_DS2423.hex
 				   GIMSK=(1<<INT0);  /*set direct GIMSK register*/ \
 				   TCCR0B=(1<<CS00)|(1<<CS01); /*8mhz /64 couse 8 bit Timer interrupt every 8us*/
 				   
-#define PC_INT_ISR ISR(PCINT0_vect) { /*ATT25 with 0 by PCINT*/ \
-					if (((PINB&(1<<PINB3))==0)&&((istat&(1<<PINB3))==(1<<PINB3))) {	Counter0++;	}		\
-					if (((PINB&(1<<PINB4))==0)&&((istat&(1<<PINB4))==(1<<PINB4))) {	Counter1++;	}		\
-					istat=PINB;}	\
-					
-#define INIT_COUNTER_PINS /* Counter Interrupt */\
-						GIMSK|=(1<<PCIE);\
-						PCMSK=(1<<PCINT3)|(1<<PCINT4);	\
-						DDRB &=~((1<<PINB3)|(1<<PINB4)); \
-						istat=PINB;\
-					
 				   
+
+//Setup Temp Measurement DS18B20 intern sensor
+#define INIT_TEMP  ADMUX=(1<<REFS1)|(1<<MUX3)|(1<<MUX2)|(1<<MUX1)|(1<<MUX0); \
+					ADCSRA=(1<<ADEN)|(1<<ADPS2)|(1<<ADPS1)|(1<<ADPS0); /*ADC Freq: ~63khz*/ \
+					ADCSRB=0;
+#define CONV_TEMP	{ uint8_t tc; int16_t sum=0; \
+						for(tc=0;tc<0x10;tc++) { \
+							ADCSRA|=(1<<ADSC)|(1<<ADIF);\
+							while(ADCSRA&(1<<ADSC));\
+							sum=sum+ADC; \
+						} \
+						sum=sum-0xDAF;/*calibration  0x010 are 1 K*/\
+						/*sum=(sum<<4);*/  \
+						scratchpad[0]=0x00ff&sum;\
+						scratchpad[1]=0x00ff&(sum>>8);\
+						}			
+	
+						
 
 
 #endif // __AVR_ATtiny25__ 
 
-#if defined(__AVR_ATtiny2313A__) || defined(__AVR_ATtiny2313__) || defined(__AVR_ATtiny4313__)
-// OW_PORT Pin 6  - PD2
 
-
-//OW Pin
-#define OW_PORT PORTD //1 Wire Port
-#define OW_PIN PIND //1 Wire Pin as number
-#define OW_PORTN (1<<PIND2)  //Pin as bit in registers
-#define OW_PINN (1<<PIND2)
-#define OW_DDR DDRD  //pin direction register
-#define SET_LOW OW_DDR|=OW_PINN;OW_PORT&=~OW_PORTN;  //set 1-Wire line to low
-#define RESET_LOW {OW_DDR&=~OW_PINN;}  //set 1-Wire pin as input
-//Pin interrupt	
-#define EN_OWINT {GIMSK|=(1<<INT0);EIFR|=(1<<INTF0);}  //enable interrupt 
-#define DIS_OWINT  GIMSK&=~(1<<INT0);  //disable interrupt
-#define SET_RISING MCUCR|=(1<<ISC01)|(1<<ISC00);  //set interrupt at rising edge
-#define SET_FALLING {MCUCR|=(1<<ISC01);MCUCR&=~(1<<ISC00);} //set interrupt at falling edge
-#define CHK_INT_EN (GIMSK&(1<<INT0))==(1<<INT0) //test if interrupt enabled
-#define PIN_INT ISR(INT0_vect)  // the interrupt service routine
-//Timer Interrupt
-#define EN_TIMER {TIMSK |= (1<<TOIE0); TIFR|=(1<<TOV0);} //enable timer interrupt
-#define DIS_TIMER TIMSK  &= ~(1<<TOIE0); // disable timer interrupt
-#define TCNT_REG TCNT0  //register of timer-counter
-#define TIMER_INT ISR(TIMER0_OVF_vect) //the timer interrupt service routine
-
-
-#define OWT_MIN_RESET 51
-#define OWT_RESET_PRESENCE 4
-#define OWT_PRESENCE 20 
-#define OWT_READLINE 3 //for fast master, 4 for slow master and long lines
-#define OWT_LOWTIME 3 //for fast master, 4 for slow master and long lines
-
-//Initializations of AVR
-#define INIT_AVR CLKPR=(1<<CLKPCE); \
-				   CLKPR=0; /*8Mhz*/  \
-				   TIMSK=0; \
-				   GIMSK=(1<<INT0);  /*set direct GIMSK register*/ \
-				   TCCR0B=(1<<CS00)|(1<<CS01); /*8mhz /64 couse 8 bit Timer interrupt every 8us*/
-				   
-				   
-
-#define PC_INT_ISR ISR(PCINT_vect) { /*ATT2313 without 0 by PCINT*/ \
-					if (((PINB&(1<<PINB3))==0)&&((istat&(1<<PINB3))==(1<<PINB3))) {	Counter0++;	}		\
-					if (((PINB&(1<<PINB4))==0)&&((istat&(1<<PINB4))==(1<<PINB4))) {	Counter1++;	}		\
-					istat=PINB;}	\
-
-#define INIT_COUNTER_PINS /* Counter Interrupt */\
-						GIMSK|=(1<<PCIE);\
-						PCMSK=(1<<PCINT3)|(1<<PCINT4);	\
-						DDRB &=~((1<<PINB3)|(1<<PINB4)); \
-						istat=PINB;\
-
-
-
-#endif // __AVR_ATtiny2313__ 
-
-
-//#define _ONE_DEVICE_CMDS_  //Commands for only one device on bus (Not tested)
-
-
-
-typedef union {
-	volatile uint8_t bytes[13];//={1,1,2,0,0,0,0,0,0,0,0,5,5};
-	struct {
-		uint16_t addr;
-		uint8_t read;
-		uint32_t counter;
-		uint32_t zero;
-		uint16_t crc;
-	};
-} counterpack_t;
-counterpack_t counterpack;
-volatile uint16_t scrc; //CRC calculation
-
-volatile uint8_t lastcps;
-volatile uint32_t Counter0;
-volatile uint32_t Counter1;
-volatile uint8_t istat;
-
+volatile uint8_t scratchpad[9]={0x50,0x05,0x0,0x0,0x7f,0xff,0x00,0x10,0x0}; //Initial scratchpad
+volatile uint8_t scrc; //CRC calculation
 
 volatile uint8_t cbuf; //Input buffer for a command
-const uint8_t owid[8]={0x1D, 0xA2, 0xD9, 0x84, 0x00, 0x00, 0x02, 0x37};    
+const uint8_t owid[8]={0x28, 0xA2, 0xD9, 0x84, 0x00, 0x00, 0x02, 0xEA};  
 //set your own ID http://www.tm3d.de/index.php/tools/14-crc8-berechnung
 volatile uint8_t bitp;  //pointer to current Byte
 volatile uint8_t bytep; //pointer to current Bit
@@ -226,15 +169,9 @@ volatile uint8_t srcount; //counter for search rom
 #define OWM_READ_COMMAND 3 //read 8 bit of command
 #define OWM_SEARCH_ROM 4  //SEARCH_ROM algorithms
 #define OWM_MATCH_ROM 5  //test number
+#define OWM_READ_SCRATCHPAD 6   
+#define OWM_WRITE_SCRATCHPAD 7
 #define OWM_CHK_RESET 8  //waiting of rising edge from reset pulse
-#define OWM_GET_ADRESS 6
-#define OWM_READ_MEMORY_COUNTER 7
-#define OWM_WRITE_SCRATCHPAD 9
-#define OWM_READ_SCRATCHPAD 10
-
-#ifdef _ONE_DEVICE_CMDS_
-#define OWM_READ_ROM 50
-#endif
 
 //Write a bit after next falling edge from master
 //its for sending a zero as soon as possible 
@@ -256,20 +193,17 @@ PIN_INT {
 			break;
 		//start of reading with falling edge from master, reading closed in timer isr
 		case OWM_MATCH_ROM:  //falling edge wait for receive 
-		case OWM_GET_ADRESS:
+		case OWM_WRITE_SCRATCHPAD:
 		case OWM_READ_COMMAND:
 			TCNT_REG=~(OWT_READLINE); //wait a time for reading
 			break;
 		case OWM_SEARCH_ROM:   //Search algorithm waiting for receive or send
 			if (srcount<2) { //this means bit or complement is writing, 
-				TCNT_REG=~(OWT_LOWTIME);
+				TCNT_REG=~(OWT_LOWTIME);					
 			} else 
 				TCNT_REG=~(OWT_READLINE);  //init for read answer of master 
 			break;
-#ifdef _ONE_DEVICE_CMDS_
-		case OWM_READ_ROM:
-#endif		
-		case OWM_READ_MEMORY_COUNTER: //a bit is sending 
+		case OWM_READ_SCRATCHPAD:  //a bit is sending 
 			TCNT_REG=~(OWT_LOWTIME);
 			break;
 		case OWM_CHK_RESET:  //rising edge of reset pulse
@@ -293,7 +227,7 @@ TIMER_INT {
 	uint8_t lbitp=bitp;
 	uint8_t lsrcount=srcount;
 	uint8_t lactbit=actbit;
-	uint16_t lscrc=scrc;
+	uint8_t lscrc=scrc;
 	//Ask input line sate 
 	uint8_t p=((OW_PIN&OW_PINN)==OW_PINN);  
 	//Interrupt still active ?
@@ -333,19 +267,21 @@ TIMER_INT {
 						lactbit=(owid[lbytep]&lbitp)==lbitp; //set actual bit
 						lwmode=lactbit;  //prepare for writing when next falling edge
 						break;
-					case 0xA5:
-						lmode=OWM_GET_ADRESS; //first the master send an address 
-						lbytep=0;lscrc=0x7bc0; //CRC16 of 0xA5
-						counterpack.bytes[0]=0;
+					case 0x4E:
+						lmode=OWM_WRITE_SCRATCHPAD;
+						lbytep=2;scratchpad[2]=0;  //initialize writing position in scratch pad 
 						break;
-#ifdef _ONE_DEVICE_CMDS_
-					case 0xCC:
-						lbytep=0;cbuf=0;lmode=OWM_READ_COMMAND;break;
-					case 0x33:
-						lmode=OWM_READ_ROM;
-						lbytep=0;	
+					case 0x44:  //Start Convert 
+					case 0x64:  // some tool uses this command
+						// START CONVERSATION
+						lmode=OWM_SLEEP;
 						break;
-#endif											
+					case 0xBE:
+						lmode=OWM_READ_SCRATCHPAD; //read scratch pad 
+						lbytep=0;lscrc=0; //from first position
+						lactbit=(lbitp&scratchpad[0])==lbitp;
+						lwmode=lactbit; //prepare for send firs bit 
+						break;
 					default: lmode=OWM_SLEEP;  //all other commands do nothing
 				}		
 			}			
@@ -393,85 +329,42 @@ TIMER_INT {
 				lmode=OWM_SLEEP;
 			}
 			break;
-		case OWM_GET_ADRESS:  
-			if (p) { //Get the Address for reading
-				counterpack.bytes[lbytep]|=lbitp;
-			}  
-			//address is part of crc
-			if ((lscrc&1)!=p) lscrc=(lscrc>>1)^0xA001; else lscrc >>=1;
+		case OWM_WRITE_SCRATCHPAD:
+			if (p) {
+				scratchpad[lbytep]|=lbitp;
+			} 
 			lbitp=(lbitp<<1);
-			if (!lbitp) {	
+			if (!lbitp) {		
 				lbytep++;
 				lbitp=1;
-				if (lbytep==2) {
-					lmode=OWM_READ_MEMORY_COUNTER;
-					lactbit=(lbitp&counterpack.bytes[lbytep])==lbitp;
-					lwmode=lactbit;
-					lsrcount=(counterpack.addr&0xfe0)+0x20-counterpack.addr; 
-					//bytes between start and Counter Values, Iam never understanding why so much???
+				if (lbytep==5) {
+					lmode=OWM_SLEEP;
 					break;
-				} else counterpack.bytes[lbytep]=0;
-			}			
+				} else scratchpad[lbytep]=0;
+			}		
 			break;	
-		case OWM_READ_MEMORY_COUNTER:
+		case OWM_READ_SCRATCHPAD:
 			RESET_LOW;
-			//CRC16 Calculation
-			if ((lscrc&1)!=lactbit) lscrc=(lscrc>>1)^0xA001; else lscrc >>=1;
-			p=lactbit;
+			if ((lscrc&1)!=lactbit) lscrc=(lscrc>>1)^0x8c; else lscrc >>=1;
 			lbitp=(lbitp<<1);
 			if (!lbitp) {		
 				lbytep++;
 				lbitp=1;
-				if (lbytep==3) {
-					lsrcount--;
-					if (lsrcount) lbytep--;
-					else  {//now copy counter in send buffer
-						switch (counterpack.addr&0xFe0) {
-						case 0x1E0:
-							counterpack.counter=Counter0;
-							break;
-						case 0x1C0:
-							counterpack.counter=Counter1;
-							break;
-						default: counterpack.counter=0;
-						}
-					}
-				}
-				if (lbytep>=13) { //done sending
+				if (lbytep>=9) {
 					lmode=OWM_SLEEP;
 					break;			
-				}  		 
-				if ((lbytep==11)&&(lbitp==1)) { //Send CRC
-					counterpack.crc=~lscrc; 
-				}			
-					 
+				} else if (lbytep==8) scratchpad[8]=lscrc;
 			}					
-			lactbit=(lbitp&counterpack.bytes[lbytep])==lbitp;
-			lwmode=lactbit;
-			
+			lactbit=(lbitp&scratchpad[lbytep])==lbitp;
+			lwmode=lactbit;		
 			break;
-#ifdef _ONE_DEVICE_CMDS_	
-		case OWM_READ_ROM:
-			RESET_LOW;
-			lbitp=(lbitp<<1);
-			if (!lbitp) {		
-				lbytep++;
-				lbitp=1;
-				if (lbytep>=8) {
-					lmode=OWM_SLEEP;
-					break;			
-				} 
-			}					
-			lactbit=(lbitp&owid[lbytep])==lbitp;
-			lwmode=lactbit;
-			break;
-#endif		
 		}
 		if (lmode==OWM_SLEEP) {DIS_TIMER;}
 		if (lmode!=OWM_PRESENCE)  { 
 			TCNT_REG=~(OWT_MIN_RESET-OWT_READLINE);  //OWT_READLINE around OWT_LOWTIME
 			EN_OWINT;
 		}
+		
 		mode=lmode;
 		wmode=lwmode;
 		bytep=lbytep;
@@ -482,37 +375,34 @@ TIMER_INT {
 }
 
 
-
-PC_INT_ISR  //for counting  defined for specific device
-
-
-
 int main(void) {
 	mode=OWM_SLEEP;
 	wmode=OWW_NO_WRITE;
 	OW_DDR&=~OW_PINN;
-	
-	uint8_t i;
-	for(i=0;i<sizeof(counterpack);i++) counterpack.bytes[i]=0;
-	Counter0=-13;
-	Counter1=6700;
-
-	DDR_SENSOR &= ~(1 << SENSOR); // define as input
-	PORT_SENSOR &= ~(1 << SENSOR);  // disable pullup
 	
 	SET_FALLING;
 	
 	INIT_AVR
 	DIS_TIMER;
 
+	DDR_SENSOR &= ~(1 << SENSOR); // define as input
+	PORT_SENSOR &= ~(1 << SENSOR);  // disable pullup
+	
 	sei();
 	
+	uint16_t temp = 0;
+	uint16_t hum = 0;
+	uint8_t decimal[10] = { 0x00, 0x02, 0x03, 0x05, 0x06, 0x08, 0x0A, 0x0B, 0x0D, 0x0E};
 	while(1){
-		uint16_t temp = 0;
-		uint16_t hum = 0;
+
 		if (am2302(&hum, &temp) == 0) {
-			Counter0 = temp;
-			Counter1 = hum;
+			temp = ((temp/10) << 4 ) | decimal[temp%10];
+			scratchpad[0]=0x00ff&temp;
+			scratchpad[1]=0x00ff&(temp>>8);
+			hum = ((hum/10) << 4 ) | decimal[hum%10];
+			scratchpad[2]=0x00ff&hum;
+			scratchpad[3]=0x00ff&(hum>>8);
+			
 		}
 		_delay_ms(1000);
 	}

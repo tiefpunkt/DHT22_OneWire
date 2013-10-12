@@ -8,5 +8,8 @@ DHT22 sensor library from http://www.pgollor.de/cms/?page_id=1013
 ## Circuit
 Just a plain ATtiny25. DHT22 connected to pin B1, OneWire Bus connected to B2.
 
+## OneWire Master
+There's an example Arduino implementation of a OneWire master reading both temperature and humidity, in the directory `MasterExample`. It requires the OneWire libary from http://www.pjrc.com/teensy/td_libs_OneWire.html.
+
 ## License
 Whatever complies with both parts used. Probably GPL3 (even if I don't like that one).
